@@ -94,7 +94,7 @@ jobs:
       - name: Build x64 driver
         shell: cmd
         run: |
-          call "%WDK71_ROOT%\bin\setenv.bat" "%WDK71_ROOT%\" fre x64 WNET no_oacr
+          call %WDK71_ROOT%\bin\setenv.bat %WDK71_ROOT%\ fre x64 WNET no_oacr
           if errorlevel 1 exit /b 1
           cd /d "%GITHUB_WORKSPACE%\mimidrv"
           build -cZ
