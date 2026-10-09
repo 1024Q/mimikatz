@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/build.yml'
       - 'mimikatz/**'
+      - 'mimidrv/**'
       - 'modules/**'
       - 'inc/**'
       - 'lib/**'
@@ -89,6 +90,44 @@ jobs:
           path: artifacts/mimikatz.exe
           if-no-files-found: error
           retention-days: 7
+
+      - name: Build x64 driver
+        shell: cmd
+        run: |
+          call "%WDK71_ROOT%\bin\setenv.bat" "%WDK71_ROOT%\" fre x64 WNET no_oacr
+          if errorlevel 1 exit /b 1
+          cd /d "%GITHUB_WORKSPACE%\mimidrv"
+          build -cZ
+          if errorlevel 1 exit /b 1
+          if not exist "objfre_wnet_amd64\amd64\mimidrv.sys" exit /b 1
+          if not exist "%GITHUB_WORKSPACE%\artifacts" mkdir "%GITHUB_WORKSPACE%\artifacts"
+          copy /y "objfre_wnet_amd64\amd64\mimidrv.sys" "%GITHUB_WORKSPACE%\artifacts\mimidrv.sys"
+          if errorlevel 1 exit /b 1
+
+      - name: Upload driver
+        uses: actions/upload-artifact@v4
+        with:
+          name: mimidrv-x64
+          path: artifacts/mimidrv.sys
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Collect driver logs
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ci-logs | Out-Null
+          Get-ChildItem mimidrv -File |
+            Where-Object { $_.Name -match '^build.*\.(log|err|wrn)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: ci-logs/
+          if-no-files-found: ignore
+          retention-days: 7
+ } |
+            Copy-Item -Destination ci-logs
 
       - name: Upload diagnostic logs
         if: always()
