@@ -1,0 +1,100 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/build.yml'
+      - 'mimikatz/**'
+      - 'modules/**'
+      - 'inc/**'
+      - 'lib/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v3
+
+      - name: Prepare Windows Driver Kit 7.1
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iso = Join-Path $env:RUNNER_TEMP 'wdk71.iso'
+          $media = Join-Path $env:RUNNER_TEMP 'wdk71-media'
+          $stage = 'C:\wdk71-stage'
+          $target = 'C:\WinDDK\7600.16385.1'
+          $logs = Join-Path $env:GITHUB_WORKSPACE 'ci-logs'
+          New-Item -ItemType Directory -Force -Path $logs, $stage | Out-Null
+          $url = 'https://download.microsoft.com/download/4/A/2/4A25C7D5-EFBE-4182-B6A9-AE6850409A78/GRMWDK_EN_7600_1.ISO'
+          Invoke-WebRequest -Uri $url -OutFile $iso
+          & 7z x $iso "-o$media" -y
+          if ($LASTEXITCODE -ne 0) { throw 'WDK ISO extraction failed' }
+          $packages = @(Get-ChildItem "$media\WDK" -Filter '*.msi' -Recurse)
+          if ($packages.Count -eq 0) { throw 'No WDK MSI packages found' }
+          foreach ($package in $packages) {
+            Write-Host "Extracting $($package.Name)"
+            $log = Join-Path $logs "$($package.BaseName).log"
+            $arguments = "/a `"$($package.FullName)`" /qn /norestart TARGETDIR=`"$stage`" /L*v `"$log`""
+            $process = Start-Process msiexec.exe -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+            if ($process.ExitCode -notin @(0, 3010)) {
+              Get-Content $log -Tail 60
+              throw "WDK package failed: $($package.Name), exit $($process.ExitCode)"
+            }
+          }
+          $setenv = Get-ChildItem $stage -Filter 'setenv.bat' -Recurse |
+            Where-Object { $_.Directory.Name -eq 'bin' } |
+            Select-Object -First 1
+          if (-not $setenv) { throw 'WDK bin\setenv.bat was not extracted' }
+          $kitRoot = $setenv.Directory.Parent.FullName
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+          Copy-Item "$kitRoot\*" $target -Recurse -Force
+          foreach ($required in @('bin\setenv.bat', 'inc', 'lib')) {
+            if (-not (Test-Path (Join-Path $target $required))) {
+              throw "WDK component missing: $required"
+            }
+          }
+          "WDK71_ROOT=$target" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "WDK 7.1 prepared at $target"
+
+      - name: Build main executable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ci-logs | Out-Null
+          msbuild .\mimikatz\mimikatz.vcxproj /m /t:Rebuild `
+            /p:Configuration=Release /p:Platform=x64 `
+            /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0 `
+            "/p:SolutionDir=$env:GITHUB_WORKSPACE\" `
+            "/p:OutDir=$env:GITHUB_WORKSPACE\artifacts\" `
+            /fl "/flp:logfile=ci-logs\build.log;verbosity=normal"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path artifacts\mimikatz.exe)) {
+            throw 'Expected executable was not produced'
+          }
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: mimikatz-x64
+          path: artifacts/mimikatz.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: ci-logs/
+          if-no-files-found: ignore
+          retention-days: 7
