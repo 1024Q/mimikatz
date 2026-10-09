@@ -1,0 +1,65 @@
+name: Publish initial release
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/publish-initial-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    concurrency:
+      group: publish-v1.0.0
+      cancel-in-progress: false
+    steps:
+      - name: Publish verified build as v1.0.0
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_RUN: '37888584547'
+          BUILD_SHA: c84dc19dcbfa6a62bf2097199a2fa33403007a99
+          RELEASE_TAG: v1.0.0
+        run: |
+          set -euo pipefail
+          actual_sha="$(gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN" --jq '.head_sha')"
+          test "$actual_sha" = "$BUILD_SHA"
+          gh run watch "$BUILD_RUN" --exit-status --interval 15
+          mkdir -p release-assets
+          gh run download "$BUILD_RUN" --name mimikatz-x64 --dir release-assets
+          gh run download "$BUILD_RUN" --name mimidrv-x64 --dir release-assets
+          test -s release-assets/mimikatz.exe
+          test -s release-assets/mimidrv.sys
+          cat > release-notes.md <<'EOF'
+          Windows x64 build of this fork.
+
+          Assets:
+          - mimikatz.exe: compiled with Visual Studio 2022.
+          - mimidrv.sys: compiled with Windows Driver Kit 7.1; unsigned.
+
+          Upstream project: https://github.com/gentilkiwi/mimikatz
+          Fork source: https://github.com/LDAx2012/mimikatz
+          Source commit: c84dc19dcbfa6a62bf2097199a2fa33403007a99
+          EOF
+          if gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' > release-state.txt 2>/dev/null; then
+            if grep -qx false release-state.txt; then
+              echo "Release already published; preserving published assets."
+              exit 0
+            fi
+          else
+            gh release create "$RELEASE_TAG" --target "$BUILD_SHA" \
+              --draft --title "$RELEASE_TAG" --notes-file release-notes.md
+          fi
+          gh release upload "$RELEASE_TAG" \
+            release-assets/mimikatz.exe release-assets/mimidrv.sys --clobber
+          gh release edit "$RELEASE_TAG" --draft=false
+          gh release view "$RELEASE_TAG" --json url,assets
